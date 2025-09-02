@@ -1,0 +1,318 @@
+import React, { useEffect, useRef, useState } from "react";
+
+// Self-contained React component. Uses getUserMedia + MediaRecorder.
+// Layout: camera takes ~2/3 width (left), phrase panel ~1/3 (right). Responsive.
+// Mirrors selfie preview, offers start/stop, countdown, camera switch, download.
+
+export default function SelfiePhraseRecorder() {
+  const videoRef = useRef(null);
+  const recPreviewRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const streamRef = useRef(null);
+
+  const [recording, setRecording] = useState(false);
+  const [recordedURL, setRecordedURL] = useState("");
+  const [chunks, setChunks] = useState([]);
+  const [error, setError] = useState("");
+  const [phrase, setPhrase] = useState("She sells seashells by the seashore 🌊");
+  const [countdown, setCountdown] = useState(0);
+  const [devices, setDevices] = useState([]);
+  const [deviceId, setDeviceId] = useState("default");
+  const [overlayEnabled, setOverlayEnabled] = useState(true);
+  const [facingMode, setFacingMode] = useState("user"); // 'user' (front) | 'environment'
+  const [mimeType, setMimeType] = useState("");
+
+  // Initialize camera
+  useEffect(() => {
+    let active = true;
+    async function init() {
+      setError("");
+      try {
+        const constraints = {
+          audio: true,
+          video: {
+            facingMode: facingMode,
+            deviceId: deviceId !== "default" ? { exact: deviceId } : undefined,
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (!active) return;
+        // Stop any existing
+        if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => {});
+        }
+        // enumerate devices
+        const list = await navigator.mediaDevices.enumerateDevices();
+        const cams = list.filter(d => d.kind === "videoinput");
+        setDevices(cams);
+      } catch (e) {
+        console.error(e);
+        setError(
+          "Could not access camera/mic. Check permissions or try a different browser/device."
+        );
+      }
+    }
+    init();
+    return () => {
+      active = false;
+    };
+    // re-run when device or facing changes
+  }, [deviceId, facingMode]);
+
+  // Prepare MediaRecorder when stream available
+  useEffect(() => {
+    if (!streamRef.current) return;
+    let preferredTypes = [
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm",
+      "video/mp4", // Safari sometimes supports this via H.264 + aac
+    ];
+    let picked = "";
+    for (const t of preferredTypes) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(t)) {
+        picked = t;
+        break;
+      }
+    }
+    setMimeType(picked);
+  }, [streamRef.current]);
+
+  function stopStream() {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      stopStream();
+      if (recordedURL) URL.revokeObjectURL(recordedURL);
+    };
+  }, []);
+
+  const startCountdownAndRecord = async () => {
+    if (!streamRef.current) return;
+    // setup recorder
+    try {
+      const recorder = new MediaRecorder(streamRef.current, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = recorder;
+      setChunks([]);
+      recorder.ondataavailable = e => {
+        if (e.data && e.data.size > 0) setChunks(prev => [...prev, e.data]);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current || chunks, { type: mimeType || "video/webm" });
+        const url = URL.createObjectURL(blob);
+        setRecordedURL(url);
+        if (recPreviewRef.current) {
+          recPreviewRef.current.src = url;
+          recPreviewRef.current.load();
+        }
+      };
+      // 3-2-1
+      setCountdown(3);
+      setRecording(true);
+      const t1 = setTimeout(() => setCountdown(2), 1000);
+      const t2 = setTimeout(() => setCountdown(1), 2000);
+      const t3 = setTimeout(() => {
+        setCountdown(0);
+        try { recorder.start(); } catch {}
+      }, 3000);
+
+      // cleanup timeouts if user aborts early
+      const cleanup = () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+      return cleanup;
+    } catch (e) {
+      console.error(e);
+      setError("Recording failed to start. This browser may not support MediaRecorder.");
+      setRecording(false);
+    }
+  };
+
+  // Keep a ref to chunks so onstop gets latest
+  const chunksRef = useRef([]);
+  useEffect(() => { chunksRef.current = chunks; }, [chunks]);
+
+  const stopRecording = () => {
+    try {
+      mediaRecorderRef.current?.stop();
+    } catch {}
+    setRecording(false);
+  };
+
+  const toggleFacing = () => {
+    setFacingMode(prev => (prev === "user" ? "environment" : "user"));
+  };
+
+  const handleDeviceChange = (e) => {
+    setDeviceId(e.target.value);
+  };
+
+  const download = () => {
+    if (!recordedURL) return;
+    const a = document.createElement("a");
+    a.href = recordedURL;
+    a.download = "tongue-twister.webm";
+    a.click();
+  };
+
+  return (
+    <div className="min-h-screen w-full bg-neutral-950 text-neutral-50">
+      <header className="sticky top-0 z-30 backdrop-blur bg-neutral-950/70 border-b border-neutral-800">
+        <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
+          <h1 className="text-xl md:text-2xl font-semibold tracking-tight">Selfie Phrase Recorder</h1>
+          <div className="flex items-center gap-2 text-xs md:text-sm">
+            <span className="opacity-80">Mime:</span>
+            <span className="px-2 py-1 rounded bg-neutral-800 border border-neutral-700">{mimeType || "auto"}</span>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-2 sm:px-4 py-4 md:py-6">
+        {/* Grid: Left 2/3 camera, Right 1/3 phrase panel */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6">
+          {/* Camera Panel (spans 2 cols on lg+) */}
+          <section className="lg:col-span-2">
+            <div className="relative aspect-[9/16] md:aspect-video w-full rounded-2xl overflow-hidden border border-neutral-800 shadow-xl">
+              <video
+                ref={videoRef}
+                className={`h-full w-full object-cover ${facingMode === "user" ? "scale-x-[-1]" : ""}`}
+                playsInline
+                muted
+              />
+
+              {/* Phrase overlay toggleable */}
+              {overlayEnabled && (
+                <div className="absolute inset-x-0 bottom-0 p-3 sm:p-4 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+                  <p className="text-base sm:text-lg md:text-xl font-medium leading-snug">
+                    {phrase}
+                  </p>
+                </div>
+              )}
+
+              {/* Countdown */}
+              {countdown > 0 && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-28 h-28 md:w-36 md:h-36 rounded-full border-4 border-neutral-200/80 flex items-center justify-center text-4xl md:text-5xl font-bold bg-neutral-900/30 backdrop-blur">
+                    {countdown}
+                  </div>
+                </div>
+              )}
+
+              {/* Controls overlay */}
+              <div className="absolute top-2 left-2 right-2 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <button
+                    className="px-3 py-1.5 rounded-full bg-neutral-900/70 border border-neutral-700 hover:bg-neutral-800 text-xs"
+                    onClick={toggleFacing}
+                    title="Switch camera"
+                  >
+                    {facingMode === "user" ? "Front" : "Back"}
+                  </button>
+                  <label className="px-3 py-1.5 rounded-full bg-neutral-900/70 border border-neutral-700 text-xs">
+                    <span className="mr-2 opacity-80">Camera</span>
+                    <select value={deviceId} onChange={handleDeviceChange} className="bg-transparent outline-none">
+                      <option value="default">Default</option>
+                      {devices.map(d => (
+                        <option key={d.deviceId} value={d.deviceId}>{d.label || "Camera"}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <label className="px-3 py-1.5 rounded-full bg-neutral-900/70 border border-neutral-700 text-xs">
+                  <input type="checkbox" className="mr-2" checked={overlayEnabled} onChange={e => setOverlayEnabled(e.target.checked)} />
+                  Overlay phrase
+                </label>
+              </div>
+
+              {/* Record Button */}
+              <div className="absolute inset-x-0 bottom-3 flex items-center justify-center gap-3">
+                {!recording ? (
+                  <button
+                    onClick={startCountdownAndRecord}
+                    className="h-14 w-14 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition shadow-lg border-2 border-white"
+                    title="Start recording"
+                  />
+                ) : (
+                  <button
+                    onClick={stopRecording}
+                    className="px-5 py-2 rounded-full bg-neutral-100 text-neutral-900 font-medium hover:bg-white active:scale-95 transition shadow"
+                    title="Stop recording"
+                  >
+                    Stop
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {error && (
+              <p className="mt-3 text-sm text-red-400">{error}</p>
+            )}
+
+            {/* Playback + download */}
+            {recordedURL && (
+              <div className="mt-4 rounded-2xl border border-neutral-800 p-3 md:p-4">
+                <h3 className="font-semibold mb-2">Recorded clip</h3>
+                <video ref={recPreviewRef} className="w-full rounded-lg" controls />
+                <div className="mt-3 flex gap-2">
+                  <button onClick={download} className="px-4 py-2 rounded-lg bg-neutral-200 text-neutral-900 hover:bg-white">Download</button>
+                  <a href={recordedURL} target="_blank" rel="noreferrer" className="px-4 py-2 rounded-lg border border-neutral-600 hover:bg-neutral-800">Open in new tab</a>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* Phrase Panel (1/3 width) */}
+          <aside className="lg:col-span-1">
+            <div className="sticky top-[72px] space-y-4">
+              <div className="rounded-2xl border border-neutral-800 p-4">
+                <h2 className="text-lg font-semibold mb-3">Phrase</h2>
+                <textarea
+                  value={phrase}
+                  onChange={e => setPhrase(e.target.value)}
+                  className="w-full min-h-[6rem] rounded-lg bg-neutral-900 border border-neutral-700 p-3 outline-none"
+                />
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {[
+                    "Unique New York, Unique New York",
+                    "Red leather, yellow leather",
+                    "Irish wristwatch, Swiss wristwatch",
+                    "Toy boat, toy boat, toy boat",
+                  ].map(p => (
+                    <button
+                      key={p}
+                      onClick={() => setPhrase(p)}
+                      className="px-3 py-1.5 rounded-full border border-neutral-700 hover:bg-neutral-800 text-sm"
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-neutral-800 p-4">
+                <h2 className="text-lg font-semibold mb-3">Tips</h2>
+                <ul className="list-disc list-inside space-y-1 text-sm text-neutral-300">
+                  <li>If the preview looks mirrored, that's normal for selfie mode. The recording will play back normally.</li>
+                  <li>Grant mic and camera permissions when prompted.</li>
+                  <li>Use the overlay to keep the phrase visible while recording.</li>
+                </ul>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </main>
+
+      <footer className="mx-auto max-w-6xl px-4 py-6 text-xs text-neutral-400">
+        Built for quick tests. For production, add upload-to-cloud and server-side storage.
+      </footer>
+    </div>
+  );
+}
